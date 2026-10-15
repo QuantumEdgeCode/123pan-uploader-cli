@@ -513,6 +513,94 @@ class Pan123:
         except ValueError as e:
             print(f"delete_file: 响应解析失败: {e}")
 
+    def list_files_recursive(self, start_parent_id=None, _files=None, _base_path=""):
+        """递归遍历目录及子目录，收集每个文件的 Etag/MD5 校验值
+
+        从当前目录或指定目录开始，递归遍历整个目录树，
+        收集每个文件的信息（包括 123云盘 API 返回的 Etag/MD5 哈希值）。
+        操作完成后会自动恢复导航状态（parentFileId、parentFileList）。
+
+        参数:
+            start_parent_id: 起始目录 ID（None 表示从当前目录开始）
+            _files: 递归内部累加器（外部不要传入）
+            _base_path: 递归内部路径追踪（外部不要传入）
+
+        返回:
+            list[dict]: 文件信息列表，每项包含:
+                - FileName: 文件名
+                - Etag: MD5 校验值（不可用则为空字符串）
+                - Size: 文件大小（字节）
+                - SizeHuman: 可读的大小字符串
+                - FileId: 123云盘的文件 ID
+                - S3KeyFlag: 存储标识
+                - Type: 文件类型（0=文件）
+                - FilePath: 相对于起始目录的路径
+        """
+        # 保存当前导航状态，结束后恢复
+        saved_parent_file_id = self.parentFileId
+        saved_parent_file_list = self.parentFileList.copy()
+
+        try:
+            # 如果指定了起始目录，先导航过去
+            if start_parent_id is not None:
+                self.parentFileId = start_parent_id
+                self.parentFileList = [start_parent_id]
+
+            if _files is None:
+                _files = []
+
+            # 获取当前目录的文件列表
+            code = self.get_dir()
+            if code != 0:
+                print(f"警告: list_files_recursive: get_dir 返回 code={code}")
+                return _files
+
+            if self.list is None:
+                return _files
+
+            for item in self.list:
+                if item.get("Type") == 0:
+                    # 普通文件
+                    size = item.get("Size", 0)
+                    if size > 1073741824:
+                        size_human = f"{size / 1073741824:.2f} GB"
+                    elif size > 1048576:
+                        size_human = f"{size / 1048576:.2f} MB"
+                    elif size > 1024:
+                        size_human = f"{size / 1024:.2f} KB"
+                    else:
+                        size_human = f"{size} B"
+
+                    _files.append({
+                        "FileName": item.get("FileName", ""),
+                        "Etag": item.get("Etag", ""),
+                        "Size": size,
+                        "SizeHuman": size_human,
+                        "FileId": item.get("FileId", ""),
+                        "S3KeyFlag": item.get("S3KeyFlag", 0),
+                        "Type": 0,
+                        "FilePath": _base_path,
+                    })
+
+                elif item.get("Type") == 1:
+                    # 子目录 —— 递归遍历
+                    dir_id = item.get("FileId")
+                    dir_name = item.get("FileName", "")
+                    sub_path = f"{_base_path}/{dir_name}" if _base_path else f"/{dir_name}"
+                    self.list_files_recursive(
+                        start_parent_id=dir_id,
+                        _files=_files,
+                        _base_path=sub_path,
+                    )
+
+        finally:
+            # 恢复导航状态
+            self.parentFileId = saved_parent_file_id
+            self.parentFileList = saved_parent_file_list
+            self.get_dir()
+
+        return _files
+
     def share(self):
         """为所选文件创建分享链接"""
         fileIdList = ""

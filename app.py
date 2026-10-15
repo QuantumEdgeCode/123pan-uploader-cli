@@ -34,6 +34,7 @@ from utils.command_handler import (
     create_argument_parser,
     parse_upload_command,
     handle_mget_command,
+    handle_export_command,
     execute_upload,
     validate_upload_path,
     format_upload_mode
@@ -83,6 +84,7 @@ def print_interactive_help():
     print("  <path> -k                 冲突时保留两份")
     print("  <path> --no-skip          关闭 MD5 重复校验")
     print("  mget <url> [-o file] [-t n] 下载文件")
+    print("  export [-r] [-o file|csv|json|txt] 导出文件校验值")
     print("  0                         退出程序")
     print("  Ctrl+C 两次               退出程序")
     print("="*60 + "\n")
@@ -128,6 +130,11 @@ def run_interactive_mode(mpush, default_sure_option, default_skip_existing):
             # 下载命令
             if user_input.startswith("mget "):
                 handle_mget_command(user_input)
+                continue
+
+            # 导出文件校验值命令
+            if user_input == "export" or user_input.startswith("export "):
+                handle_export_command(user_input, mpush.pan)
                 continue
 
             # 解析上传命令

@@ -343,3 +343,244 @@ def format_upload_mode(sure_option, skip_existing):
     """
     mode = '覆盖' if sure_option == '2' else '保留两份'
     return f"上传模式: {mode}，跳过已存在: {skip_existing}"
+
+
+def _format_export_txt(file_records):
+    """将文件记录格式化为对齐的纯文本表格
+
+    参数:
+        file_records: 文件记录列表，每项含 FileName, Etag, SizeHuman, FileId, FilePath
+
+    返回:
+        str: 格式化后的文本表格
+    """
+    if not file_records:
+        return "未找到文件。"
+
+    # 计算各列宽度
+    max_name = max(len(r["FileName"]) for r in file_records)
+    max_name = max(max_name, len("文件名"))
+    max_name = min(max_name, 48)
+
+    max_etag = max(len(r["Etag"]) for r in file_records)
+    max_etag = max(max_etag, len("Etag (MD5)"))
+    max_etag = min(max_etag, 36)
+
+    max_size = max(len(r["SizeHuman"]) for r in file_records)
+    max_size = max(max_size, len("大小"))
+    max_size = min(max_size, 14)
+
+    # 构建表头格式
+    header_fmt = f"  {{:<{max_name}}}  {{:<{max_etag}}}  {{:>{max_size}}}  {{:<10}}  {{:<20}}"
+    separator_fmt = f"  {{:-<{max_name}}}  {{:-<{max_etag}}}  {{:->{max_size}}}  {{:-<10}}  {{:-<20}}"
+
+    lines = []
+    lines.append("=" * 60)
+    lines.append("  123云盘文件校验值导出")
+    lines.append("=" * 60)
+    lines.append(header_fmt.format("文件名", "Etag (MD5)", "大小", "FileId", "路径"))
+    lines.append(separator_fmt.format("", "", "", "", ""))
+
+    for r in file_records:
+        name = r["FileName"][:max_name]
+        etag = r["Etag"][:max_etag] if r["Etag"] else "-"
+        lines.append(header_fmt.format(name, etag, r["SizeHuman"], str(r["FileId"]), r["FilePath"]))
+
+    lines.append("-" * 60)
+    lines.append(f"  总计: {len(file_records)} 个文件")
+    return "\n".join(lines)
+
+
+def _format_export_csv(file_records):
+    """将文件记录格式化为 CSV
+
+    参数:
+        file_records: 文件记录列表，每项含 FileName, Etag, Size, SizeHuman, FileId, FilePath
+
+    返回:
+        str: CSV 格式字符串
+    """
+    import csv
+    import io
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["文件名", "Etag (MD5)", "大小(字节)", "大小(可读)", "FileId", "路径"])
+
+    for r in file_records:
+        writer.writerow([
+            r["FileName"],
+            r["Etag"] if r["Etag"] else "",
+            r["Size"],
+            r["SizeHuman"],
+            r["FileId"],
+            r["FilePath"],
+        ])
+
+    return output.getvalue()
+
+
+def _format_export_json(file_records):
+    """将文件记录格式化为 JSON
+
+    参数:
+        file_records: 文件记录列表
+
+    返回:
+        str: JSON 格式字符串
+    """
+    import json
+    return json.dumps(file_records, ensure_ascii=False, indent=2)
+
+
+def handle_export_command(user_input, pan):
+    """处理 export 命令，批量导出云盘文件的校验值
+
+    解析交互模式下的 export 命令，导出文件的 Etag/MD5 校验值。
+
+    参数:
+        user_input: 原始命令字符串（如 'export -r -o all.csv'）
+        pan: 已认证的 Pan123 实例
+
+    用法:
+        export [-r] [-o <file>]
+
+    -o 自动推断逻辑:
+        all.csv   → CSV 格式，输出到 all.csv
+        all.json  → JSON 格式，输出到 all.json
+        csv       → CSV 格式，自动文件名 123pan_checksums_YYYY-MM-DD.csv
+        json      → JSON 格式，自动文件名 123pan_checksums_YYYY-MM-DD.json
+        other     → TXT 格式，输出到指定文件
+    无 -o        → TXT 表格输出到终端
+    """
+    # 解析参数
+    try:
+        parts = shlex.split(user_input, posix=False)
+    except ValueError as e:
+        print(f"命令格式错误: {e}")
+        print("用法: export [-r] [-o <文件路径|格式名>]")
+        return
+
+    # 去掉开头的 "export"
+    args = parts[1:] if len(parts) > 1 else []
+
+    recursive = False
+    output_file = None
+    output_format = "txt"
+
+    i = 0
+    while i < len(args):
+        token = args[i]
+        if token == "-r":
+            recursive = True
+            i += 1
+        elif token == "-o":
+            if i + 1 < len(args):
+                raw = args[i + 1]
+
+                # 检查是否有可识别的扩展名
+                ext = os.path.splitext(raw)[1].lower()
+                known_formats = {".csv": "csv", ".json": "json", ".txt": "txt"}
+                bare_formats = {"csv": "csv", "json": "json", "txt": "txt"}
+
+                if ext in known_formats:
+                    # 如 all.csv → CSV, all.json → JSON
+                    output_format = known_formats[ext]
+                    output_file = normalize_path(raw)
+                elif raw.lower() in bare_formats:
+                    # 如 "csv" → 自动生成带日期的文件名
+                    output_format = raw.lower()
+                    from datetime import date
+                    today = date.today().isoformat()
+                    base_name = f"123pan_checksums_{today}"
+                    output_file = normalize_path(f"{base_name}.{output_format}")
+                else:
+                    # 普通文件名 → TXT 格式
+                    output_format = "txt"
+                    output_file = normalize_path(raw)
+
+                # 任何情况都不覆盖本地文件，自动递增 _01, _02...
+                counter = 0
+                while os.path.exists(output_file):
+                    counter += 1
+                    base, ext_out = os.path.splitext(output_file)
+                    # 去掉已有的 _NN 后缀再拼，防止越叠越长（data_01.json → data_02.json）
+                    if len(base) >= 3 and base[-3:-2] == "_" and base[-2:].isdigit():
+                        base = base[:-3]
+                    output_file = normalize_path(f"{base}_{counter:02d}{ext_out}")
+
+                i += 2
+            else:
+                print("错误: -o 需要跟文件路径或格式名 (csv|json|txt)")
+                return
+        elif token == "--format":
+            print("提示: --format 参数已移除，直接用 -o 加扩展名即可")
+            print("  示例: export -o out.csv   (CSV)")
+            print("        export -o out.json  (JSON)")
+            print("        export -o csv       (自动文件名 CSV)")
+            print("        export              (终端输出 TXT 表格)")
+            return
+        else:
+            print(f"错误: 未知参数: {token}")
+            print("用法: export [-r] [-o <文件路径|格式名>]")
+            return
+
+    print("正在从 123云盘拉取文件列表...")
+
+    if recursive:
+        file_records = pan.list_files_recursive()
+    else:
+        # 刷新当前目录文件列表
+        code = pan.get_dir()
+        if code != 0:
+            print(f"拉取文件列表失败 (code={code})")
+            return
+
+        if pan.list is None:
+            print("当前目录没有文件。")
+            return
+
+        file_records = []
+        for item in pan.list:
+            if item.get("Type") == 0:
+                size = item.get("Size", 0)
+                if size > 1073741824:
+                    size_human = f"{size / 1073741824:.2f} GB"
+                elif size > 1048576:
+                    size_human = f"{size / 1048576:.2f} MB"
+                elif size > 1024:
+                    size_human = f"{size / 1024:.2f} KB"
+                else:
+                    size_human = f"{size} B"
+
+                file_records.append({
+                    "FileName": item.get("FileName", ""),
+                    "Etag": item.get("Etag", ""),
+                    "Size": size,
+                    "SizeHuman": size_human,
+                    "FileId": item.get("FileId", ""),
+                    "FilePath": "/",
+                })
+
+    if not file_records:
+        print("未找到文件。")
+        return
+
+    # 按格式输出
+    if output_format == "csv":
+        output = _format_export_csv(file_records)
+    elif output_format == "json":
+        output = _format_export_json(file_records)
+    else:
+        output = _format_export_txt(file_records)
+
+    # 写入文件或打印到终端
+    if output_file:
+        try:
+            with open(output_file, "w", encoding="utf-8") as f:
+                f.write(output)
+            print(f"已导出 {len(file_records)} 个文件到: {output_file}")
+        except IOError as e:
+            print(f"写入文件失败: {e}")
+    else:
+        print(output)
