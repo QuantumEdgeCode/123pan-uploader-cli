@@ -17,7 +17,9 @@
 日志:
   - logs/commands/  — 用户命令输入及解析结果
   - logs/runtime/   — 程序运行事件（启动、登录、上传、下载）
-  - logs/errors/    — 错误事件及程序退出
+  - logs/errors/    — 错误事件、程序退出及未捕获异常堆栈
+  - logs/console/   — 控制台镜像（终端上实际看到的每一条消息，由 main() 安装的
+                      stdout 镜像自动写入，业务代码无需逐条调用）
 """
 
 import os
@@ -28,7 +30,14 @@ import json
 from tosasitill_123pan.class123 import Pan123
 from tosasitill_123pan import config
 from utils.mpush import MPush
-from utils.logger import log_runtime, log_error, log_command, log_exit
+from utils.logger import (
+    log_runtime,
+    log_error,
+    log_command,
+    log_exit,
+    install_console_mirror,
+    install_excepthook,
+)
 from utils.input_handler import setup_readline, normalize_path
 from utils.command_handler import (
     create_argument_parser,
@@ -190,6 +199,11 @@ def main():
 
     登录失败时，程序记录错误并以退出码 1 退出。
     """
+    # 日志补齐: 控制台输出镜像落盘 + 未捕获异常堆栈入错误日志。
+    # 必须放在 parse_args() 之前，否则 --help 之类的输出抓不到。
+    install_console_mirror()
+    install_excepthook()
+
     signal.signal(signal.SIGINT, handle_ctrl_c)
     setup_readline()
 
